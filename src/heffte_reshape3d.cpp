@@ -9,6 +9,7 @@
  */
 
 #include "heffte_reshape3d.h"
+#include "string.h"
 
 namespace heffte {
 
@@ -144,6 +145,107 @@ void compute_overlap_map_transpose_pack(int me, int nprocs, box3d const destinat
     }
 }
 
+// For Persistent A2AV
+struct myinfo{
+    int* recv_bytes;
+    MPI_Win win;
+    bool P_inited;
+};
+typedef struct myinfo myinfo;
+
+
+int MPI_OSC_Alltoall(const void* send_buffer, int size, int rank, size_t seg_size, MPI_Win *win)
+{
+    int step, sendto;
+    for ( step = 1; step < size + 1; step++ ){
+        sendto = (( rank + step) % size );
+        void * tmpsend = (char*)send_buffer + sendto * seg_size;
+
+        MPI_Put( tmpsend,
+                 seg_size,
+                 MPI_BYTE, sendto,
+                 rank * seg_size,
+                 seg_size,
+                 MPI_BYTE,
+                 *win );
+    }
+    MPI_Win_fence(0, *win);
+    return 0;
+}
+
+int MPI_OSC_Alltoallv(const void* send_buffer, int size, int rank, const int* send_counts, 
+                      const int* send_disp, const int* recv_disp, int datatype_size,
+                      myinfo *P_info)
+{
+    int step, sendto;
+    for ( step = 1; step < size + 1; step++ ){
+        sendto = ( rank + step) % size ;
+        void * tmpsend = (char*)send_buffer + send_disp[sendto] * datatype_size;
+        size_t seg_size = send_counts[sendto] * datatype_size;
+
+        printf("OSC A2AV: R[%d] sends to %d, scount %d, sdips %d, seg_size %d , rdisp %d\n", rank, sendto, send_counts[sendto], send_disp[sendto], seg_size, recv_disp[rank]);
+
+        MPI_Put( tmpsend,                          // origin_addr
+                seg_size,                          // origin_count
+                MPI_BYTE,                          // origin_datatype
+                sendto,                            // target_rank
+                recv_disp[rank] * datatype_size,   // target_disp
+                seg_size,                          // target_count
+                MPI_BYTE,                          // target_datatype
+                (P_info->win) );                  // MPI_Win    
+    }
+    MPI_Win_fence(0, (P_info->win));
+    return 0;
+}
+
+
+int get_segdsize (struct ompi_datatype_t *sdtype, int scount)
+{
+    char datatype[20];
+    int  retlen  =  0;
+
+    MPI_Type_set_name( MPI_DOUBLE, "DOUBLE" );
+    MPI_Type_set_name( MPI_C_DOUBLE_COMPLEX, "DOUBLE_COMPLEX" );
+    MPI_Type_set_name( MPI_FLOAT, "FLOAT" );
+    MPI_Type_set_name( MPI_INT, "INT" );
+    MPI_Type_get_name( sdtype, datatype, &retlen );
+
+    if ( strcmp( datatype, "DOUBLE") == 0 ) return scount * sizeof(double);
+    if ( strcmp( datatype, "DOUBLE_COMPLEX") == 0 ) return scount * sizeof(double _Complex);
+    if ( strcmp( datatype, "FLOAT") == 0 ) return scount * sizeof(float);
+    if ( strcmp( datatype, "INT") == 0 ) return scount * sizeof(int);
+
+    return -1;
+}
+
+// Init for Persistent A2AV; exchange information and create window for one-sided communication A2AV
+int MPI_Persistent_Init(int me, int nprocs, const void* send_size, int recv_total, void* recv_buffer, MPI_Comm comm, myinfo *P_info)
+{
+    if( P_info->recv_bytes == NULL || P_info->P_inited == 0 ){
+        int* recv_bytes = (int*)malloc(nprocs * sizeof(int));
+        // Exchanging information with peers in the same comm
+        MPI_Alltoall(send_size, nprocs, MPI_INT,
+                     recv_bytes, nprocs, MPI_INT,
+                     comm);
+        MPI_Barrier(comm);
+
+        printf("R[%d] has recv_buffer %p, recv_total %d, P_info->win %p\n", me, recv_buffer, recv_total, &(P_info->win));
+        // TODO: Assuming double complex precision
+        MPI_Win_create(recv_buffer, recv_total * 16, 1, MPI_INFO_NULL, comm, &(P_info->win));
+        MPI_Win_fence(0, P_info->win);
+
+        P_info->P_inited == 1;        
+    }
+    return 0;
+}
+
+int MPI_Persistent_start(const void* send_buffer, int nprocs, int me, const int* send_counts, const int* send_disp, const int* recv_disp, myinfo *P_info)
+{
+    // TODO: Assuming double complex precision
+    int datatype_size = 16;
+    return MPI_OSC_Alltoallv(send_buffer, nprocs, me, send_counts, send_disp, recv_disp, datatype_size, P_info);
+}
+
 template<typename backend_tag, template<typename device> class packer>
 reshape3d_alltoallv<backend_tag, packer>::reshape3d_alltoallv(
                         int cinput_size, int coutput_size,
@@ -161,15 +263,15 @@ reshape3d_alltoallv<backend_tag, packer>::reshape3d_alltoallv(
     packplan(std::move(cpackplan)), unpackplan(std::move(cunpackplan)),
     send(pgroup, send_proc, send_size),
     recv(pgroup, recv_proc, recv_size)
-{}
+    {}
 
 template<typename backend_tag, template<typename device> class packer>
 template<typename scalar_type>
 void reshape3d_alltoallv<backend_tag, packer>::apply_base(scalar_type const source[], scalar_type destination[], scalar_type workspace[]) const{
-
     scalar_type *send_buffer = workspace;
     scalar_type *recv_buffer = workspace + input_size;
 
+    //printf("R[%d] at apply_base got comm %p, nprocs %d, has recv_buff %p, input_size %d\n", me, comm, nprocs, recv_buffer, input_size);
     packer<typename backend::buffer_traits<backend_tag>::location> packit;
 
     int offset = 0;
@@ -200,11 +302,43 @@ void reshape3d_alltoallv<backend_tag, packer>::apply_base(scalar_type const sour
     }
     #endif
 
+    printf("R[%d] in apply_base(), has P_info %p\n", me, P_info);
+    // For persistent A2AV
+    //if( P_info == NULL ) Init_myinfo(P_info);
+
+    { add_trace name("Persistent collective init");
+        int rt;
+        //printf("R[%d] gonna init persistent coll, P_info->recv_bytes %p, P_info->win %p, P_info->P_inited %d\n", me, P_info->recv_bytes, &(P_info->win), P_info->P_inited);
+        //printf("R[%d] gonna init persistent coll, P_info %p\n", me, P_info);
+/*
+        int j = 0;
+        for(j = 0; j < nprocs; j++){
+            printf("R[%d] has %d peers in this comm, sends %d data to %d in the same comm, recv_total %d\n", me, nprocs, send_size.data()[j], j, recv_total);
+        }
+*/
+        //rt = MPI_Persistent_Init(me, nprocs, send_size.data(), recv_total, recv_buffer, comm);
+        //printf("R[%d] finished persistent init\n", me);
+    }
+
+    { add_trace name("Persistent collective start");
+        int rt;
+        //rt = MPI_Persistent_start(send_buffer, nprocs, me, send.counts.data(), send.displacements.data(), recv.displacements.data());
+        //MPI_OSC_Alltoallv(send_buffer, nprocs, me, send.counts.data(), send.displacements.data(), recv.displacements.data(), datatype_size, &win);
+        //printf("R[%d] of %d nprocs at A2AV, OSC A2AV, win %p\n", me, nprocs, &win);
+    }
+
+/*
+    { add_trace name("osc all2all");
+        MPI_OSC_Alltoall(send_buffer, nprocs, me, seg_size, &win);
+    }
+
+    MPI_Win_free(&win);
     { add_trace name("all2allv");
     MPI_Alltoallv(send_buffer, send.counts.data(), send.displacements.data(), mpi::type_from<scalar_type>(),
                   recv_buffer, recv.counts.data(), recv.displacements.data(), mpi::type_from<scalar_type>(),
                   comm);
     }
+*/
 
     #ifdef Heffte_ENABLE_ROCM
     if (std::is_same<typename backend::buffer_traits<backend_tag>::location, tag::gpu>::value){
@@ -233,6 +367,9 @@ make_reshape3d_alltoallv(std::vector<box3d> const &input_boxes,
     int const me = mpi::comm_rank(comm);
     int const nprocs = mpi::comm_size(comm);
 
+    myinfo *P_info;
+    Init_myinfo(P_info);
+
     std::vector<pack_plan_3d> packplan, unpackplan; // will be moved into the class
     std::vector<int> send_offset;
     std::vector<int> send_size;
@@ -240,7 +377,7 @@ make_reshape3d_alltoallv(std::vector<box3d> const &input_boxes,
     std::vector<int> recv_offset;
     std::vector<int> recv_size;
     std::vector<int> recv_proc;
-
+   
     box3d outbox = output_boxes[me];
     box3d inbox  = input_boxes[me];
 
@@ -262,13 +399,14 @@ make_reshape3d_alltoallv(std::vector<box3d> const &input_boxes,
         }
     }
 
+    //printf("R[%d] at make_reshape3d got nprocs %d, comm %p, recv_size %d\n", me, comm, recv_size);
     return std::unique_ptr<reshape3d_alltoallv<backend_tag, packer>>(new reshape3d_alltoallv<backend_tag, packer>(
-        inbox.count(), outbox.count(),
-        comm, a2a_group(send_proc, recv_proc, input_boxes, output_boxes),
-        std::move(send_offset), std::move(send_size), send_proc,
-        std::move(recv_offset), std::move(recv_size), recv_proc,
-        std::move(packplan), std::move(unpackplan)
-                                                       ));
+                inbox.count(), outbox.count(),
+                comm, a2a_group(send_proc, recv_proc, input_boxes, output_boxes),
+                std::move(send_offset), std::move(send_size), send_proc,
+                std::move(recv_offset), std::move(recv_size), recv_proc,
+                std::move(packplan), std::move(unpackplan)
+                ));
 }
 
 template<typename backend_tag, template<typename device> class packer>

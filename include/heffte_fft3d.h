@@ -381,8 +381,20 @@ public:
     //!\brief Returns the size used by the communication workspace buffers (internal use).
     size_t size_comm_buffers() const{ return std::max(get_workspace_size(forward_shaper), get_workspace_size(backward_shaper)); }
 
+/*
+    // For OSC A2AV
+    struct persistent_info{
+        MPI_Comm sub_comms[8];
+        MPI_Win  wins[8];
+    };
+    
+    int MPI_Persistent_Init(MPI_Comm const&, struct persistent_info const&) const {
+        return MPI_Persistent_Init(comm, P); }
+
+    };
+*/
 private:
-    /*!
+        /*!
      * \brief Initialize the class using the provided plan and communicator.
      *
      * This constructor is private to prevent direct call from the user.

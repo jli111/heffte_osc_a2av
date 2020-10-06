@@ -39,14 +39,24 @@
 
 namespace heffte {
 
+int MPI_Persistent_Init(MPI_Comm comm, struct persistent_info *P)
+{
+    return 0;
+}
+
 
 template<typename backend_tag>
 fft3d<backend_tag>::fft3d(logic_plan3d const &plan, int const this_mpi_rank, MPI_Comm const comm) :
     pinbox(new box3d(plan.in_shape[0][this_mpi_rank])), poutbox(new box3d(plan.out_shape[3][this_mpi_rank])),
     scale_factor(1.0 / static_cast<double>(plan.index_count))
 {
+    //struct persistent_info pinfo;
+    int rt;
+    //rt = MPI_Persistent_Init(comm, &pinfo);
     for(int i=0; i<4; i++){
+        //printf("R[%d] before forward_shaper %d, gonna make_reshape3d, has comm %p\n", this_mpi_rank, i, comm);
         forward_shaper[i]    = make_reshape3d<backend_tag>(plan.in_shape[i], plan.out_shape[i], comm, plan.options);
+        //printf("R[%d] before backward_shaper %d, gonna make_reshape3d, has comm %p\n", this_mpi_rank, 3-i, comm);
         backward_shaper[3-i] = make_reshape3d<backend_tag>(plan.out_shape[i], plan.in_shape[i], comm, plan.options);
     }
 
