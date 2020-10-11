@@ -93,7 +93,8 @@ void benchmark_fft(std::array<int,3> size_fft, std::deque<std::string> const &ar
     fft.backward(output_array, output_array);
 
     // Execution
-    int const ntest = 5;
+    // TODO: ntest was 5
+    int const ntest = 1;
     MPI_Barrier(fft_comm);
     double t = -MPI_Wtime();
     for(int i = 0; i < ntest; ++i) {

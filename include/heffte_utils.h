@@ -159,6 +159,8 @@ inline MPI_Comm new_comm_form_group(std::vector<int> const &ranks, MPI_Comm cons
     MPI_Comm_create(comm, new_group, &result);
     MPI_Group_free(&orig_group);
     MPI_Group_free(&new_group);
+    int me = comm_rank(comm);
+    //printf("R[%d] in new_comm_form_group, old comm %p, new comm %p\n", me, comm, result);
     return result;
 }
 

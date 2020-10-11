@@ -62,6 +62,7 @@ CUDA_KERNELS =
 OBJECT_FILES = heffte_fft3d.o     \
                heffte_fft3d_r2c.o \
                heffte_reshape3d.o \
+               persistent_coll.o \
                heffte_plan_logic.o\
 
 # check each backend and set the dependencies

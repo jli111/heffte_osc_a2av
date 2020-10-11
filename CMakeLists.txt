@@ -55,11 +55,13 @@ set(Heffte_common_sources
     include/heffte_plan_logic.h
     include/heffte_pack3d.h
     include/heffte_reshape3d.h
+    include/persistent_coll.h
     include/heffte_fft3d.h
     include/heffte_fft3d_r2c.h
     src/heffte_c.cpp
     src/heffte_plan_logic.cpp
     src/heffte_reshape3d.cpp
+    src/persistent_coll.cpp
     src/heffte_fft3d.cpp
     src/heffte_fft3d_r2c.cpp
     )
