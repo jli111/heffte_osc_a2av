@@ -9,6 +9,11 @@
  */
 
 #include "heffte_reshape3d.h"
+#include <unistd.h>
+#include <math.h>
+#include <complex.h>
+#include <tgmath.h>
+#include <cuda_runtime.h>
 
 namespace heffte {
 
@@ -143,6 +148,7 @@ void compute_overlap_map_transpose_pack(int me, int nprocs, box3d const destinat
         }
     }
 }
+
 /*
 template<typename backend_tag, template<typename device> class packer>
 reshape3d_alltoallv<backend_tag, packer>::reshape3d_alltoallv(
@@ -185,11 +191,13 @@ reshape3d_alltoallv<backend_tag, packer>::reshape3d_alltoallv(
     
     if( NULL == P_info ){      
         P_info = (myinfo*)malloc(sizeof(myinfo));
+        //printf("[proc %d] Gonna init P_info %p\n", getpid(), P_info);
         P_info->recv_elements = (int*)malloc( nprocs * sizeof(int) );
         P_info->recv_disp_arry = (int*)malloc( nprocs * nprocs * sizeof(int) );
         P_info->win = (MPI_Win*)malloc( sizeof(MPI_Win) );
-        P_info->P_inited = 0;
-        P_info->prev_recv = NULL;
+        P_info->nprocs        = nprocs;
+        P_info->me            = me;
+        P_info->P_inited      = 0;
     }
 }
 
@@ -229,34 +237,66 @@ void reshape3d_alltoallv<backend_tag, packer>::apply_base(scalar_type const sour
     }
     #endif
 
-    // For persistent A2AV
-
-    int rt, i, datatype_size;
-    //for(i = 0; i < recv.displacements.size(); i++){
-    //    printf("R[%d] in apply_base, has recv_disp[%d] %d, send_size[%d] %d, send.counts.data()[%d]:%d\n", me, i, recv.displacements.data()[i], i, send_size[i], i, send.counts.data()[i]);
-    //}
-    datatype_size = get_segdsize(mpi::type_from<scalar_type>(), 1);
-
-    { add_trace name("Persistent collective init");
-        rt = MPI_Persistent_Init(me, nprocs, send_size.data(), recv_total, recv_buffer, recv.displacements.data(), comm, datatype_size, P_info);
-    }
-
-    { add_trace name("Persistent collective start");
-        //rt = MPI_Persistent_start(send_buffer, nprocs, me, send.counts.data(), send.displacements.data(), datatype_size, P_info);
-    }
+#if 1
 
 /*
-    { add_trace name("osc all2all");
-        MPI_OSC_Alltoall(send_buffer, nprocs, me, seg_size, &win);
+    printf("\nR[%d] MPI_A2AV send_buffer %p, recv_buffer %p, input_size %ld, recv_total %ld, P_info %p, win %p\n", 
+            me, send_buffer, recv_buffer, input_size, recv_total, P_info, P_info->win);
+    int i,j;
+    for(i = 0; i < P_info->nprocs; i++){
+        printf("R[%d] has recv_disp[%d] = %d, send_disp[%d] = %d\n"
+               "          recv_counts [%d] = %d, send_counts[%d] = %d\n",
+                P_info->me, i, recv.displacements.data()[i], i, send.displacements.data()[i],
+                            i, recv.counts.data()[i], i, send.counts.data()[i]);
     }
-*/
 
-    { add_trace name("all2allv");
+    double _Complex *recvbuf_d, *chk_recvbuf_osc, *chk_recvbuf_mpi;
+    chk_recvbuf_osc = (double _Complex*)malloc(recv_total);
+    chk_recvbuf_mpi = (double _Complex*)malloc(recv_total);
+    cudaError_t cuerr;
+    cuerr = cudaMalloc( (void**)&recvbuf_d, recv_total); 
+    if( cuerr ) fprintf(stderr, "Failed to allocate recvbuf_d %s (%d    )\n", cudaGetErrorString(cuerr), cuerr);
+*/
+    P_info->sendtype      = mpi::type_from<scalar_type>();
+    P_info->recvtype      = mpi::type_from<scalar_type>();
+    P_info->datatype_size = get_segdsize(mpi::type_from<scalar_type>(), 1);
+    P_info->recv_total    = recv_total * P_info->datatype_size;
+
+    MPI_OSC_Alltoallv(send_buffer, send.counts.data(), send.displacements.data(),               
+                      mpi::type_from<scalar_type>(),
+                      recv_buffer, recv.counts.data(), recv.displacements.data(), 
+                      mpi::type_from<scalar_type>(),
+                      comm, P_info);
+
+#else
+/*
+    cudaMemcpy((void*)chk_recvbuf_osc, (const void*)recv_buffer, recv_total, cudaMemcpyDeviceToHost);
+    MPI_Barrier(comm);
+     
+
+    MPI_Alltoall(send_buffer, send.counts.data()[0], mpi::type_from<scalar_type>(),
+                 recv_buffer, recv.counts.data()[0], mpi::type_from<scalar_type>(),
+                 comm);
+    
+    MPI_Barrier(comm);
+
+    cudaMemcpy((void*)chk_recvbuf_mpi, (const void*)recv_buffer, recv_total, cudaMemcpyDeviceToHost);
+
+    printf("R[%d] finished MPI_OSC_Alltoallv and MPI_Alltoall\n", me);
+    for(j = 0; j < (recv_total / 16); j++){
+        double diff = cabs(chk_recvbuf_mpi[j] - chk_recvbuf_osc[j]);
+        if( diff > 1e-15 ) printf("R[%d] Diff mpi_recv[%d] = (%f + %fi) - osc_recv[%d] = (%f + %fi) = %f\n",
+                                     me, j, creal(chk_recvbuf_mpi[j]), cimag(chk_recvbuf_mpi[j]), 
+                                         j, creal(chk_recvbuf_osc[j]), cimag(chk_recvbuf_osc[j]), diff);   
+    }
+
+*/
     MPI_Alltoallv(send_buffer, send.counts.data(), send.displacements.data(), mpi::type_from<scalar_type>(),
                   recv_buffer, recv.counts.data(), recv.displacements.data(), mpi::type_from<scalar_type>(),
                   comm);
-    }
 
+#endif
+ 
     #ifdef Heffte_ENABLE_ROCM
     if (std::is_same<typename backend::buffer_traits<backend_tag>::location, tag::gpu>::value){
         recv_buffer = workspace + input_size;

@@ -120,6 +120,8 @@ public:
 
         MPI_Barrier(comm);
         MPI_Persistent_end(P_info);
+
+        MPI_Barrier(comm);
         mpi::comm_free(comm); 
 
     }
@@ -155,7 +157,7 @@ private:
      * \brief Private constructor that accepts a set of arrays that have been pre-computed by the factory.
      */
 
-    myinfo* P_info=NULL;
+    myinfo* P_info = NULL;
     reshape3d_alltoallv(int input_size, int output_size,
                         MPI_Comm master_comm, std::vector<int> const &pgroup,
                         std::vector<int> &&send_offset, std::vector<int> &&send_size, std::vector<int> const &send_proc,

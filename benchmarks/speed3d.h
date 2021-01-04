@@ -6,6 +6,7 @@
 */
 
 #include "test_fft3d.h"
+#include <unistd.h>
 
 #ifdef Heffte_ENABLE_CUDA
 using gpu_backend = heffte::backend::cufft;
@@ -88,14 +89,17 @@ void benchmark_fft(std::array<int,3> size_fft, std::deque<std::string> const &ar
     typename heffte::fft3d<backend_tag>::template buffer_container<std::complex<precision_type>> workspace(fft.size_workspace());
 
     // Warmup
-    heffte::add_trace("mark warmup begin");
-    fft.forward(output_array, output_array,  scale::full);
-    fft.backward(output_array, output_array);
+    MPI_Barrier(fft_comm);
+
+    fft.forward(output_array, output_array, workspace.data(), scale::full);
+    fft.backward(output_array, output_array, workspace.data());
+
+    MPI_Barrier(fft_comm);
+
+    //printf("[proc %d] Finished warm-up\n", getpid());
 
     // Execution
-    // TODO: ntest was 5
-    int const ntest = 1;
-    MPI_Barrier(fft_comm);
+    int const ntest = 10;
     double t = -MPI_Wtime();
     for(int i = 0; i < ntest; ++i) {
         heffte::add_trace("mark forward begin");
