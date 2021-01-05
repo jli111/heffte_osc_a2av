@@ -46,7 +46,7 @@ int OSC_A2AV(const void* send_buffer, void* recv_buffer, const int* send_counts,
 
         //printf("\n[proc %d]R[%d] OSC A2AV: sends to %d, scount %d, send_disp %d, from tmpsend %p, rdisp %d, win %p\n", getpid(), P_info->me, sendto, send_counts[sendto], send_disp[sendto], tmpsend, recv_disp, P_info->win);
 
-        //if( sendto != P_info->me ){
+        if( sendto != P_info->me ){
             MPI_Put( tmpsend,                           // origin_addr
                      seg_size,                          // origin_count
                      MPI_BYTE,                          // origin_datatype
@@ -55,11 +55,9 @@ int OSC_A2AV(const void* send_buffer, void* recv_buffer, const int* send_counts,
                      seg_size,                          // target_count
                      MPI_BYTE,                          // target_datatype
                      *(P_info->win) );                  // MPI_Win    
-/*
         }else{
             cudaMemcpy( (void*)(recv_buffer + recv_disp), (void*)tmpsend, seg_size, cudaMemcpyDeviceToDevice);
         }
-*/
     }
 
     MPI_Win_fence(0, *(P_info->win));
@@ -108,14 +106,14 @@ int MPI_Persistent_Init(const int* send_counts_addr, void* recv_buffer, const in
             printf("R[%d] has recv_disp from %d to me: %d\n", P_info->me, sendto, P_info->recv_disp_arry[(sendto *  P_info->nprocs) +  P_info->me]);
             //}
         }
+        printf("\n$$$ Persistent_Init before inint: R[%d] from comm %p, has recv_buffer %p, size %d, P_info %p, prev_buffer %p, P_info->win %p, P_info->P_inited %d\n", P_info->me, comm, recv_buffer, size, P_info, P_info->prev_recv, P_info->win, P_info->P_inited);
 */
-        //printf("\n$$$ Persistent_Init before inint: R[%d] from comm %p, has recv_buffer %p, size %d, P_info %p, prev_buffer %p, P_info->win %p, P_info->P_inited %d\n", P_info->me, comm, recv_buffer, size, P_info, P_info->prev_recv, P_info->win, P_info->P_inited);
 
-
-        MPI_Win_create(recv_buffer, P_info->recv_total, 1, MPI_INFO_NULL, comm, (P_info->win));
-        MPI_Win_fence( 0, *(P_info->win) );
         P_info->P_inited = 1;
+        MPI_Win_create(recv_buffer, P_info->recv_total, 1, MPI_INFO_NULL, comm, (P_info->win));
     }
+    MPI_Win_fence( 0, *(P_info->win) );
+
     return 0;
 }
 
@@ -123,12 +121,13 @@ int MPI_Persistent_start(const void* send_buffer, void* recv_buffer, const int* 
 {
     int size = P_info->nprocs;
     int rank = P_info->me;
-    int seg_size = send_counts[0] * 16;
+    int seg_size = send_counts[0] * P_info->datatype_size;
     
     // All-to-all operation
-    return OSC_A2A(send_buffer, size, rank, seg_size, P_info->win, P_info);
+    //return OSC_A2A(send_buffer, size, rank, seg_size, P_info->win, P_info);
+
     // All-to-allv operation
-    //return OSC_A2AV(send_buffer, recv_buffer, send_counts, send_disp, P_info);
+    return OSC_A2AV(send_buffer, recv_buffer, send_counts, send_disp, P_info);
 }
 
 void MPI_Persistent_stop(myinfo *P_info, void* recv_buffer)

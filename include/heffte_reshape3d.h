@@ -121,7 +121,6 @@ public:
         MPI_Barrier(comm);
         MPI_Persistent_end(P_info);
 
-        MPI_Barrier(comm);
         mpi::comm_free(comm); 
 
     }

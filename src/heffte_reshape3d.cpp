@@ -250,12 +250,15 @@ void reshape3d_alltoallv<backend_tag, packer>::apply_base(scalar_type const sour
                             i, recv.counts.data()[i], i, send.counts.data()[i]);
     }
 
+    int i, j;
     double _Complex *recvbuf_d, *chk_recvbuf_osc, *chk_recvbuf_mpi;
     chk_recvbuf_osc = (double _Complex*)malloc(recv_total);
     chk_recvbuf_mpi = (double _Complex*)malloc(recv_total);
     cudaError_t cuerr;
     cuerr = cudaMalloc( (void**)&recvbuf_d, recv_total); 
+
     if( cuerr ) fprintf(stderr, "Failed to allocate recvbuf_d %s (%d    )\n", cudaGetErrorString(cuerr), cuerr);
+
 */
     P_info->sendtype      = mpi::type_from<scalar_type>();
     P_info->recvtype      = mpi::type_from<scalar_type>();
@@ -270,30 +273,30 @@ void reshape3d_alltoallv<backend_tag, packer>::apply_base(scalar_type const sour
 
 #else
 /*
+    MPI_Alltoall(send_buffer, send.counts.data()[0], mpi::type_from<scalar_type>(),
+                 recv_buffer, recv.counts.data()[0], mpi::type_from<scalar_type>(),
+                 comm);
+*/
+
     cudaMemcpy((void*)chk_recvbuf_osc, (const void*)recv_buffer, recv_total, cudaMemcpyDeviceToHost);
     MPI_Barrier(comm);
      
 
-    MPI_Alltoall(send_buffer, send.counts.data()[0], mpi::type_from<scalar_type>(),
-                 recv_buffer, recv.counts.data()[0], mpi::type_from<scalar_type>(),
-                 comm);
+    MPI_Alltoallv(send_buffer, send.counts.data(), send.displacements.data(), mpi::type_from<scalar_type>(),
+                  recv_buffer, recv.counts.data(), recv.displacements.data(), mpi::type_from<scalar_type>(),
+                  comm);
     
-    MPI_Barrier(comm);
 
     cudaMemcpy((void*)chk_recvbuf_mpi, (const void*)recv_buffer, recv_total, cudaMemcpyDeviceToHost);
+    MPI_Barrier(comm);
 
-    printf("R[%d] finished MPI_OSC_Alltoallv and MPI_Alltoall\n", me);
+    //printf("R[%d] finished MPI_OSC_Alltoallv and MPI_Alltoall\n", me);
     for(j = 0; j < (recv_total / 16); j++){
         double diff = cabs(chk_recvbuf_mpi[j] - chk_recvbuf_osc[j]);
         if( diff > 1e-15 ) printf("R[%d] Diff mpi_recv[%d] = (%f + %fi) - osc_recv[%d] = (%f + %fi) = %f\n",
                                      me, j, creal(chk_recvbuf_mpi[j]), cimag(chk_recvbuf_mpi[j]), 
                                          j, creal(chk_recvbuf_osc[j]), cimag(chk_recvbuf_osc[j]), diff);   
     }
-
-*/
-    MPI_Alltoallv(send_buffer, send.counts.data(), send.displacements.data(), mpi::type_from<scalar_type>(),
-                  recv_buffer, recv.counts.data(), recv.displacements.data(), mpi::type_from<scalar_type>(),
-                  comm);
 
 #endif
  
